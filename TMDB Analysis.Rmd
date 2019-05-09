@@ -1,0 +1,259 @@
+---
+title: "TMDB Analysis"
+author: "Ahmed Abdulhamid"
+date: "May 9, 2019"
+output: 
+  html_document: 
+    df_print: paged
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### Preprocessing
+```{r}
+library(tidyverse)
+library(jsonlite)
+
+tmdb_5000_credits <- read_csv("tmdb_5000_credits.csv", 
+                              col_types = cols(movie_id = col_character()))
+
+tmdb_5000_movies <- read_csv("tmdb_5000_movies.csv", 
+                             col_types = cols(id = col_character(), 
+                                              runtime = col_double()))
+
+tmdb_5000_movies %>% 
+  filter(status == "Released") %>% 
+  select(movie_id = id, title, original_language, release_date, budget, revenue, runtime, vote_average, vote_count, popularity) %>% 
+  left_join(
+    tmdb_5000_movies %>% 
+      filter(nchar(genres)>2) %>%
+      mutate(js_genres=map(genres,fromJSON)) %>%
+      select(id, title, js_genres) %>% 
+      unnest(js_genres) %>%
+      group_by(id) %>%
+      summarise(genres = str_c(name,collapse =  "|")) %>% 
+      select(movie_id = id, genres)
+  ) %>% 
+  left_join(
+    tmdb_5000_movies %>% 
+      filter(nchar(keywords)>2) %>%
+      mutate(js_keywords=map(keywords,fromJSON)) %>%
+      select(id, title, js_keywords) %>% 
+      unnest(js_keywords) %>%
+      group_by(id) %>%
+      summarise(keywords = str_c(name,collapse =  "|")) %>% 
+      select(movie_id = id, keywords)
+  ) %>% 
+left_join(
+    tmdb_5000_movies %>% 
+      filter(nchar(production_companies)>2) %>%
+      mutate(js_production_companies=map(production_companies,fromJSON)) %>%
+      select(id, title, js_production_companies) %>% 
+      unnest(js_production_companies) %>%
+      group_by(id) %>%
+      summarise(production_companies = str_c(name,collapse =  "|")) %>% 
+      select(movie_id = id, production_companies)
+) %>% 
+  left_join(
+    tmdb_5000_movies %>% 
+      filter(nchar(production_countries)>2) %>%
+      mutate(js_production_countries=map(production_countries,fromJSON)) %>%
+      select(id, title, js_production_countries) %>% 
+      unnest(js_production_countries) %>%
+      group_by(id) %>%
+      summarise(production_countries = str_c(name,collapse =  "|")) %>% 
+      select(movie_id = id, production_countries)
+) -> movies_data
+
+
+tmdb_5000_credits %>%
+  select(movie_id) %>% 
+  left_join(
+    tmdb_5000_credits %>%
+      filter(nchar(crew)>2) %>%
+      mutate(js_crew=map(crew,fromJSON)) %>%
+      select(-crew, -cast) %>% 
+      unnest(js_crew) %>% 
+      filter(job == "Director") %>% 
+      group_by(movie_id) %>% 
+      arrange(movie_id, id) %>%
+      slice(1) %>% 
+      select(movie_id, director = name)
+  ) %>% 
+  left_join(
+tmdb_5000_credits %>%
+  filter(nchar(crew)>2) %>%
+  mutate(js_crew=map(crew,fromJSON)) %>%
+  select(-crew, -cast) %>% 
+  unnest(js_crew) %>% 
+  filter(job == "Producer") %>% 
+  group_by(movie_id) %>% 
+  arrange(movie_id, id) %>%
+  slice(1) %>% 
+  select(movie_id, producer = name)
+) %>% 
+left_join(
+tmdb_5000_credits %>%
+  filter(nchar(cast)>2) %>%
+  mutate(js_cast=map(cast,fromJSON)) %>%
+  select(-crew, -cast) %>% 
+  unnest(js_cast) %>%
+  arrange(movie_id, order) %>%
+  group_by(movie_id) %>% 
+  summarise(actor_1 = nth(name, 1),
+         actor_2 = nth(name, 2),
+         actor_3 = nth(name, 3))
+) -> cast_crew
+
+
+
+write_csv(movies_data, "tmdb_movies_metadata.csv")
+write_csv(cast_crew, "tmdb_cast_crew.csv")
+
+```
+
+### Calling necessary packages.
+
+```{r}
+library(dplyr) 
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+
+
+```
+
+## let's begin by loading our datasets and explore them.
+```{r}
+df_movies = read_csv("tmdb_movies_metadata.csv")
+df_cast_crew = read_csv("tmdb_cast_crew.csv")
+```
+
+
+### Now, we will take a glimpse at movies dataset.
+```{r}
+glimpse(df_movies)
+```
+
+### Same with cast_crew dataset.
+
+```{r}
+glimpse(df_cast_crew)
+```
+
+### Take a subset from movies to geners
+
+```{r}
+df_genres <- select(df_movies, movie_id ,title , vote_average, genres)
+
+```
+
+
+### Doing Some transformations to reach a form that each row has one genre, with multible rows for the movie.
+
+
+```{r}
+df_genres_final <- separate_rows(df_genres,genres, sep = "\\|")
+df_genres_final
+```
+
+### In general, what is the average vote related to each genre?
+
+
+```{r}
+df_genres_groubed <- df_genres_final %>%   
+                      group_by(genres)  %>%
+                      filter(!is.na(genres)) %>% 
+                      summarise(average_vote = mean(vote_average))
+
+df_genres_groubed 
+```
+
+### Trying to make the answer more visual
+
+```{r}
+ggplot(data=df_genres_groubed, aes(x=genres, y=average_vote)) +
+      geom_bar(stat="identity") +
+      coord_flip()
+```
+### For the keywords, which of them is related to the highest rating?
+
+```{r}
+df_keywords <- select(df_movies, vote_average, keywords)
+highest_keywords <- df_keywords %>% separate_rows(keywords, sep = "\\|")   %>% 
+                group_by(keywords) %>% 
+                filter(!is.na(keywords)) %>% 
+                summarise(average_vote = mean(vote_average)) %>% 
+                top_n(n = 10 , wt = average_vote)
+highest_keywords
+```
+
+### Is there any relation between the movie budget and the average vote?
+
+```{r}
+budget_rating <- select(df_movies, movie_id,budget, vote_average)
+## Normalizing the features
+budget_rating$budget <- (budget_rating$budget - mean(budget_rating$budget)) / sd(budget_rating$budget)
+budget_rating$vote_average <- (budget_rating$vote_average - mean(budget_rating$vote_average)) / sd(budget_rating$vote_average)
+
+budget_rating
+```
+
+### Using some visuals
+
+```{r}
+ggscatter(budget_rating, x = "vote_average", y = "budget", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Vote Average", ylab = "Budget")
+```
+### As shown in the figure above there is no realation between the movie budgut and the average vote 
+   Note (Values in the figure are not the actual ones )
+   
+   
+   
+### What is the relation between each director and the average vote?
+
+
+```{r}
+movies_rate <- select(df_movies, movie_id , vote_average )
+director_actor  <- select(df_cast_crew , movie_id , director , actor_1 , actor_2 ,actor_3)
+
+df_movie_rating_crew <- movies_rate %>% inner_join( director_actor , by = "movie_id")
+df_movie_rating_crew %>%  group_by(director) %>% 
+                          filter(!is.na(director)) %>% 
+                          summarise(average_vote = mean(vote_average)) %>% 
+                          top_n(10 )
+
+```
+### Who are the actors related to the high rating?
+
+
+```{r}
+Top_10_actors  <-   df_movie_rating_crew %>% 
+                    unite("actors" , c("actor_1" , "actor_2" , "actor_3") , remove =TRUE , sep = "|" ) %>% 
+                    separate_rows(actors , sep = "\\|") %>% 
+                          group_by(actors) %>% 
+                          filter(!is.na(actors)) %>% 
+                          summarise(average_vote = mean(vote_average)) %>% 
+                          top_n(10 )
+
+Top_10_actors
+```
+### Who are the directors with highest revenue in their movies?
+
+
+```{r}
+director_revenue <- select(df_movies, movie_id , revenue ) %>%
+                    inner_join( director_actor , by = "movie_id") %>% 
+                    group_by(director) %>% 
+                    filter(!is.na(director)) %>% 
+                    summarise(revenue = sum(revenue)) %>% 
+                    top_n(10 )%>% 
+                    arrange(desc(revenue))
+director_revenue
+
+```
+
